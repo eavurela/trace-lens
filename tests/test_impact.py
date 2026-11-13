@@ -88,6 +88,12 @@ def test_new_causes_and_summary() -> None:
     deploy = Deploy(at=0, source="lazy", service="demo-api", detail="master", commit="1a2b3c4d5e", author="Ana")
     verdict, text = summary(deploy, [row], [new], partial=False)
     assert verdict == "worse"
-    assert text.startswith("Después del deploy (lazy: commit 1a2b3c4d de Ana) empeoró: GET /b: errores 0,0% → 8,0%")
-    assert "Error nuevo en GET /b (demo-api): KeyError" in text
+    assert text.startswith("Después del deploy (lazy: commit 1a2b3c4d de Ana) empeoró GET /b (errores 0,0% → 8,0%)")
+    assert "aparece un error nuevo en GET /b (demo-api): KeyError" in text
+    faster = {**row, "endpoint": "GET /c", "verdicts": ["faster"],
+              "before": {**row["before"], "p95_ms": 900}, "after": {**row["after"], "p95_ms": 300}}
+    verdict, text = summary(None, [faster], [new], partial=False)
+    assert verdict == "worse" and "empeoró" not in text
+    assert text == ("Después del deploy aparece un error nuevo en GET /b (demo-api): KeyError: 'id'; "
+                    "mejoró GET /c (p95 900 → 300 ms).")
     assert summary(None, [], [], partial=True)[0] == "same"

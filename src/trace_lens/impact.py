@@ -225,19 +225,25 @@ def change_phrase(row: dict[str, Any]) -> str:
 
 
 def summary(deploy: Deploy | None, rows: list[dict[str, Any]], fresh: list[Cause], partial: bool) -> tuple[str, str]:
+    """El veredicto (worse/better/same) y la frase: qué empeoró, qué errores son nuevos y qué mejoró."""
     bad = [r for r in rows if BAD & set(r["verdicts"])]
     good = [r for r in rows if GOOD & set(r["verdicts"]) and not BAD & set(r["verdicts"])]
     verdict = "worse" if bad or fresh else "better" if good else "same"
     who = f"Después del deploy ({deploy_label(deploy)})" if deploy else "Después del deploy"
-    if verdict == "same":
-        text = f"{who} no cambió nada que se note en errores, latencia ni tráfico."
+    parts = []
+    if bad:
+        parts.append("empeoró " + " · ".join(f"{r['endpoint']} ({change_phrase(r)})" for r in bad[:3]))
+    if fresh:
+        c = fresh[0]
+        more = f" y {len(fresh) - 1} más" if len(fresh) > 1 else ""
+        parts.append(f"aparece un error nuevo en {c.operation} ({c.service})" + (f": {c.message}" if c.message else "")
+                     + more)
+    if good:
+        parts.append("mejoró " + " · ".join(f"{r['endpoint']} ({change_phrase(r)})" for r in good[:3]))
+    if parts:
+        text = f"{who} " + "; ".join(parts) + "."
     else:
-        items = [f"{r['endpoint']}: {change_phrase(r)}" for r in (bad or good)[:3]]
-        text = f"{who} {'empeoró' if verdict == 'worse' else 'mejoró'}: " + " · ".join(items) if items else who
-        if fresh:
-            c = fresh[0]
-            text += f". Error nuevo en {c.operation} ({c.service})" + (f": {c.message}" if c.message else "")
-        text += "."
+        text = f"{who} no cambió nada que se note en errores, latencia ni tráfico."
     if partial:
         text += " Todavía no pasó la ventana entera después del deploy: los números pueden cambiar."
     return verdict, text
