@@ -11,6 +11,7 @@ import logging
 import urllib.error
 import urllib.parse
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -63,6 +64,6 @@ def service_context(
         "service": service,
         "from": iso(start),
         "to": iso(end),
-        "deploys": [{"at": d.at, "source": d.source, "detail": d.detail} for d in found],
+        "deploys": [{**asdict(d), "tickets": list(d.tickets)} for d in found],
         "ecs": ecs_series(stack_lens_url, service, start, end),
     }

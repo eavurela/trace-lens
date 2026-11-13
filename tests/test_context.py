@@ -59,7 +59,9 @@ def test_deploys_include_ecs_rollouts(monkeypatch: pytest.MonkeyPatch) -> None:
                         "state": "completed", "task_definition": "demo-api:7"}]}
     monkeypatch.setattr(clients, "get_json", _fake_get({"/changes": {"changes": []}, "/deploys": ecs}))
     found = clients.Deploys(stack_lens_url="http://lens")("demo-api", 0, 3600)
-    assert [(d.at, d.source, d.detail) for d in found] == [(600.0, "ecs", "demo-api:7 completed")]
+    assert [(d.at, d.source, d.detail, d.status) for d in found] == [
+        (600.0, "ecs", "demo-api:7", "completed")
+    ]
 
 
 def test_deploys_ignore_non_ecs_service(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,3 +79,30 @@ def test_context_endpoint() -> None:
     body = TestClient(app).get("/context", params={"service": "demo-api", "minutes": 15}).json()
     assert body == {"service": "demo-api", "window": 900}
     assert json.dumps(body)
+
+
+def test_lazy_run_as_deploy_with_commit_and_tickets() -> None:
+    run = {"run_id": "r1", "run_type": "deploy", "deploy_env": "prod", "branch": "master",
+           "commit": "1a2b3c4d5e6f", "commit_short": "1a2b3c4", "commit_message": "fix: login\n\ndetalle",
+           "commit_author": "Ana Prueba", "jira_refs": ["PROJ-12"], "verdict": "success",
+           "updated_at": "1970-01-01T00:10:00Z"}
+    d = clients.lazy_deploy("demo-api", run, "prod")
+    assert (d.at, d.commit, d.author) == (600.0, "1a2b3c4d5e6f", "Ana Prueba")
+    assert (d.tickets, d.status, d.message) == (("PROJ-12",), "success", "fix: login\n\ndetalle")
+    assert clients.lazy_deploy("demo-api", {**run, "run_type": "analysis"}, "prod") is None
+    assert clients.lazy_deploy("demo-api", {**run, "deploy_env": "develop"}, "prod") is None
+
+
+def test_deploy_label_uses_what_is_known() -> None:
+    from trace_lens.explain import deploy_label
+
+    full = Deploy(at=0, source="lazy", service="s", detail="master", commit="1a2b3c4d5e", author="Ana",
+                  tickets=("PROJ-12",))
+    assert deploy_label(full) == "lazy: commit 1a2b3c4d de Ana, PROJ-12"
+    assert deploy_label(Deploy(at=0, source="ecs", service="s", detail="demo-api:7")) == "ecs: demo-api:7"
+
+
+def test_context_deploys_carry_the_details() -> None:
+    d = Deploy(at=1.0, source="lazy", service="s", detail="master", commit="abc", tickets=("PROJ-1",))
+    out = context.service_context(lambda s, a, b: [d], "", "s", 0, 10)
+    assert out["deploys"][0]["commit"] == "abc" and out["deploys"][0]["tickets"] == ["PROJ-1"]

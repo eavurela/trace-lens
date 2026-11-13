@@ -29,6 +29,21 @@ class Deploy:
     source: str
     service: str
     detail: str
+    #: Lo que la fuente sepa del cambio (Lazy trae todo; CodeBuild el commit; ECS la task definition).
+    commit: str = ""
+    message: str = ""
+    author: str = ""
+    tickets: tuple[str, ...] = ()
+    status: str = ""
+
+
+def deploy_label(d: Deploy) -> str:
+    """`lazy: commit 1a2b3c4 de Ana, PROJ-12` (lo que haya)."""
+    parts = [f"commit {d.commit[:8]}" if d.commit else "", f"de {d.author}" if d.author else ""]
+    text = " ".join(p for p in parts if p) or d.detail
+    if d.tickets:
+        text = ", ".join(x for x in (text, *d.tickets) if x)
+    return f"{d.source}: {text}" if text else d.source
 
 
 _QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""")
@@ -184,7 +199,7 @@ def summarize(
         text += f": {c.message}." if c.message else "."
     if deploy is not None and start is not None:
         minutes = round(abs(start - deploy.at) / 60)
-        what = f"({deploy.source}: {deploy.detail})"
+        what = f"({deploy_label(deploy)})"
         if deploy.at <= start:
             text += f" Empezó {minutes} min después de un deploy {what}."
         else:

@@ -117,22 +117,7 @@ class Deploys:
             headers={"Authorization": f"Bearer {self._lazy_token}"},
         )
         runs = body if isinstance(body, list) else body.get("runs") or body.get("items") or []
-        out = []
-        for r in runs:
-            if r.get("deploy_env") and r["deploy_env"] != self._lazy_env:
-                continue
-            at = _ts(r.get("updated_at")) or _ts(r.get("created_at"))
-            if at is None:
-                continue
-            commit = r.get("commit_short") or (r.get("commit") or "")[:8]
-            who = r.get("commit_author") or ""
-            detail = " ".join(
-                x for x in (f"commit {commit}" if commit else "", f"de {who}" if who else "") if x
-            )
-            out.append(
-                Deploy(at=at, source="lazy", service=service, detail=detail or str(r.get("run_id", "")))
-            )
-        return out
+        return [d for d in (lazy_deploy(service, r, self._lazy_env) for r in runs) if d is not None]
 
     def _ecs(self, service: str, since: float, until: float) -> list[Deploy]:
         """Deploys de ECS (stack-lens acepta hasta 24 h): el fin del rollout o, si sigue, su inicio."""
@@ -146,10 +131,9 @@ class Deploys:
             at = _ts(d.get("finished")) or _ts(d.get("started"))
             if at is None:
                 continue
-            state = d.get("state") or ""
-            detail = " ".join(x for x in (d.get("task_definition") or "", state) if x)
-            detail = detail or str(d.get("deployment"))
-            out.append(Deploy(at=at, source="ecs", service=service, detail=detail))
+            detail = d.get("task_definition") or str(d.get("deployment"))
+            status = d.get("state") or ""
+            out.append(Deploy(at=at, source="ecs", service=service, detail=detail, status=status))
         return out
 
     def _changes(self, service: str) -> list[Deploy]:
@@ -160,10 +144,42 @@ class Deploys:
             if at is None:
                 continue
             what = c.get("what") or "deploy"
-            name = c.get("application") or c.get("job") or c.get("name") or ""
-            out.append(Deploy(at=at, source=what, service=service, detail=str(name)))
+            name = c.get("application") or c.get("job") or c.get("project") or c.get("name") or ""
+            status = str(c.get("result") or c.get("status") or "").lower()
+            commit = c.get("commit") or ""
+            deploy = Deploy(
+                at=at, source=what, service=service, detail=str(name), commit=commit, status=status
+            )
+            out.append(deploy)
         return out
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: Corridas de Lazy que no despliegan: análisis y revisiones de PR.
+NOT_DEPLOY = {"analysis", "pr_review"}
+
+
+def lazy_deploy(service: str, run: dict[str, Any], env: str) -> Deploy | None:
+    """Una corrida de Lazy como deploy, con commit, mensaje, autor y tickets de Jira."""
+    if run.get("run_type") in NOT_DEPLOY or (run.get("deploy_env") and run["deploy_env"] != env):
+        return None
+    at = _ts(run.get("updated_at")) or _ts(run.get("created_at"))
+    if at is None:
+        return None
+    tickets = run.get("jira_refs") or []
+    if isinstance(tickets, str):
+        tickets = [t for t in tickets.replace(",", " ").split() if t]
+    return Deploy(
+        at=at,
+        source="lazy",
+        service=service,
+        detail=str(run.get("branch") or run.get("run_id") or ""),
+        commit=str(run.get("commit") or run.get("commit_short") or ""),
+        message=str(run.get("commit_message") or "")[:500],
+        author=str(run.get("commit_author") or ""),
+        tickets=tuple(str(t) for t in tickets[:10]),
+        status=str(run.get("verdict") or run.get("status") or "").lower(),
+    )
