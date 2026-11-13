@@ -14,12 +14,15 @@ NAME = r"^[\w .:/{}@*,=+-]{1,200}$"
 Service = Annotated[str | None, Query(pattern=NAME)]
 #: (servicio, endpoint, span_kind, desde, hasta, trazas por muestra) -> resumen de /examine.
 Examiner = Callable[[str, str, str, float, float, int], dict[str, Any]]
+#: (servicio, desde, hasta) -> deploys y CPU/memoria de ECS del servicio.
+Contexter = Callable[[str, float, float], dict[str, Any]]
 
 
 def create_app(
     store: Store,
     status: Callable[[], dict[str, Any]] | None = None,
     examiner: Examiner | None = None,
+    contexter: Contexter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="trace-lens", version="0.1.0")
 
@@ -54,5 +57,16 @@ def create_app(
             return examiner(service, endpoint, kind, end - minutes * 60, end, limit)
         except OSError as exc:
             raise HTTPException(502, f"Tempo no respondió: {type(exc).__name__}") from exc
+
+    @app.get("/context")
+    def context(
+        service: Annotated[str, Query(pattern=NAME)],
+        minutes: Annotated[int, Query(ge=5, le=24 * 60)] = 60,
+    ) -> dict[str, Any]:
+        """Deploys del servicio y su CPU y memoria de ECS en la ventana, para los gráficos."""
+        if contexter is None:
+            raise HTTPException(503, "stack-lens no está configurado")
+        end = time.time()
+        return contexter(service, end - minutes * 60, end)
 
     return app

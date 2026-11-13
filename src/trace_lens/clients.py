@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from trace_lens.explain import Deploy
@@ -101,6 +102,13 @@ class Deploys:
                 found += self._changes(service)
             except Exception:  # noqa: BLE001
                 log.warning("stack-lens no respondió para %s", service, exc_info=True)
+            try:
+                found += self._ecs(service, since, until)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:  # 404: no es un servicio ECS
+                    log.warning("stack-lens no respondió los deploys ECS de %s: %s", service, exc)
+            except Exception:  # noqa: BLE001
+                log.warning("stack-lens no respondió los deploys ECS de %s", service, exc_info=True)
         return [d for d in found if since <= d.at <= until]
 
     def _lazy(self, service: str) -> list[Deploy]:
@@ -126,6 +134,24 @@ class Deploys:
             )
         return out
 
+    def _ecs(self, service: str, since: float, until: float) -> list[Deploy]:
+        """Deploys de ECS (stack-lens acepta hasta 24 h): el fin del rollout o, si sigue, su inicio."""
+        since = max(since, until - 24 * 3600)
+        body = get_json(
+            f"{self._stack_lens}/ecs/{urllib.parse.quote(service, safe='')}/deploys",
+            {"start": _iso(since), "end": _iso(until)},
+        )
+        out = []
+        for d in body.get("deploys") or []:
+            at = _ts(d.get("finished")) or _ts(d.get("started"))
+            if at is None:
+                continue
+            state = d.get("state") or ""
+            detail = " ".join(x for x in (d.get("task_definition") or "", state) if x)
+            detail = detail or str(d.get("deployment"))
+            out.append(Deploy(at=at, source="ecs", service=service, detail=detail))
+        return out
+
     def _changes(self, service: str) -> list[Deploy]:
         body = get_json(f"{self._stack_lens}/changes", {"service": service, "hours": 24})
         out = []
@@ -137,3 +163,7 @@ class Deploys:
             name = c.get("application") or c.get("job") or c.get("name") or ""
             out.append(Deploy(at=at, source=what, service=service, detail=str(name)))
         return out
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

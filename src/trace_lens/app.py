@@ -13,6 +13,7 @@ import uvicorn
 from trace_lens.api import create_app
 from trace_lens.clients import Deploys, PromClient, TempoClient
 from trace_lens.config import Settings, settings_from_env
+from trace_lens.context import service_context
 from trace_lens.engine import Engine, run_examine
 from trace_lens.store import Store
 
@@ -25,13 +26,8 @@ class Runner:
         self._store = store
         self._s = settings
         self.tempo = TempoClient(settings.tempo_url, settings.tempo_host_header)
-        self._engine = Engine(
-            store,
-            PromClient(settings.prometheus_url),
-            self.tempo,
-            Deploys(settings.lazy_url, settings.lazy_token, settings.stack_lens_url),
-            settings,
-        )
+        self.deploys = Deploys(settings.lazy_url, settings.lazy_token, settings.stack_lens_url)
+        self._engine = Engine(store, PromClient(settings.prometheus_url), self.tempo, self.deploys, settings)
         self._state: dict[str, Any] = {"last_run": None, "last_error": None, "last_stats": None}
         self._last_prune = 0.0
 
@@ -81,6 +77,7 @@ def main() -> None:
             lambda svc, ep, kind, start, end, limit: run_examine(
                 runner.tempo, svc, ep, kind, start, end, limit
             ),
+            lambda svc, start, end: service_context(runner.deploys, settings.stack_lens_url, svc, start, end),
         ),
         host=os.getenv("TRACE_LENS_HOST", "0.0.0.0"),
         port=int(os.getenv("TRACE_LENS_PORT", "7500")),
