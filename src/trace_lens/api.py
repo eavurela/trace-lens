@@ -16,6 +16,8 @@ Service = Annotated[str | None, Query(pattern=NAME)]
 Examiner = Callable[[str, str, str, float, float, int], dict[str, Any]]
 #: (servicio, desde, hasta) -> deploys y CPU/memoria de ECS del servicio.
 Contexter = Callable[[str, float, float], dict[str, Any]]
+#: (servicio, momento del deploy o None para el último, minutos por ventana) -> antes y después.
+Impacter = Callable[[str, float | None, int], dict[str, Any]]
 
 
 def create_app(
@@ -23,6 +25,7 @@ def create_app(
     status: Callable[[], dict[str, Any]] | None = None,
     examiner: Examiner | None = None,
     contexter: Contexter | None = None,
+    impacter: Impacter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="trace-lens", version="0.1.0")
 
@@ -68,5 +71,22 @@ def create_app(
             raise HTTPException(503, "stack-lens no está configurado")
         end = time.time()
         return contexter(service, end - minutes * 60, end)
+
+    @app.get("/deploy-impact")
+    def deploy_impact(
+        service: Annotated[str, Query(pattern=NAME)],
+        at: Annotated[float | None, Query(ge=0)] = None,
+        minutes: Annotated[int, Query(ge=10, le=120)] = 30,
+    ) -> dict[str, Any]:
+        """Antes y después de un deploy (``at`` en epoch; sin ``at``, el último de 24 h): qué endpoints y
+        dependencias cambiaron en errores, latencia, 4xx y tráfico, y qué errores aparecieron recién."""
+        if impacter is None:
+            raise HTTPException(503, "Prometheus no está configurado")
+        try:
+            return impacter(service, at, minutes)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(502, f"Prometheus no respondió: {type(exc).__name__}") from exc
 
     return app

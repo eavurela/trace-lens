@@ -17,6 +17,7 @@ from trace_lens.config import Settings
 from trace_lens.detect import EndpointStats, Finding, change_start, detect
 from trace_lens.examine import calls_from_search, examine, examine_queries
 from trace_lens.explain import Cause, Deploy, group_causes, match_deploy, summarize
+from trace_lens.impact import MIN_AFTER_SECONDS, change_phrase, compare, windows
 from trace_lens.store import Store
 from trace_lens.tempo import error_origins, parse_trace
 
@@ -180,6 +181,13 @@ def run_examine(
     }
 
 
+def _stored_deploy(raw: dict[str, Any] | None) -> Deploy | None:
+    """El deploy guardado en la base (JSON: los tickets vuelven como lista)."""
+    if not raw:
+        return None
+    return Deploy(**{**raw, "tickets": tuple(raw.get("tickets") or ())})
+
+
 class Engine:
     def __init__(
         self,
@@ -229,12 +237,14 @@ class Engine:
             causes = self._causes(f, since, now)
             focus = self._focus(f, since, now)
             deploy = self._deploy(f, start)
+            deploy_change = self._deploy_change(f, deploy, start, now)
             explained_at = now
         else:
             start = prev["started_at"]
             causes = [Cause(**c) for c in prev["causes"]]
             focus = prev.get("focus") or []
-            deploy = Deploy(**prev["deploy"]) if prev["deploy"] else None
+            deploy = _stored_deploy(prev["deploy"])
+            deploy_change = prev.get("deploy_change") or ""
             explained_at = prev["explained_at"]
 
         self._store.save(
@@ -256,7 +266,9 @@ class Engine:
                 "deploy": asdict(deploy) if deploy else None,
                 "codes": dict(f.codes),
                 "focus": focus,
-                "summary": summarize(f, start, causes, deploy, self._s.tz, focus),
+                "deploy_change": deploy_change,
+                "summary": summarize(f, start, causes, deploy, self._s.tz, focus)
+                + (f" Después del deploy: {deploy_change}." if deploy_change else ""),
             }
         )
 
@@ -303,6 +315,21 @@ class Engine:
         # Lo justo para la frase y la tarjeta; el detalle completo lo pide el front con /examine.
         keep = ("param", "source", "value", "failing", "ok", "failing_share", "ok_share", "codes")
         return [{k: x[k] for k in keep} for x in result["focus"][:3]]
+
+    def _deploy_change(self, f: Finding, deploy: Deploy | None, start: float | None, now: float) -> str:
+        """Qué cambió en este endpoint entre antes y después del deploy que coincide (si lo hay)."""
+        if deploy is None or start is None or deploy.at > start:
+            return ""
+        before, after, _ = windows(deploy.at, 30, now)
+        if after.end - after.start < MIN_AFTER_SECONDS:
+            return ""
+        try:
+            rows = compare(self._prom.query, f.service, before, after)
+        except Exception:  # noqa: BLE001 - sin la comparación el hallazgo igual sirve
+            log.warning("no se pudo comparar el deploy de %s", f.key, exc_info=True)
+            return ""
+        row = next((r for r in rows if r["endpoint"] == f.endpoint and r["kind"] == f.span_kind), None)
+        return change_phrase(row) if row and row["verdicts"] else ""
 
     def _deploy(self, f: Finding, start: float | None) -> Deploy | None:
         if start is None:

@@ -41,6 +41,7 @@ JSON_FIELDS = ("causes", "deploy", "codes", "focus")
 MIGRATIONS = {
     "codes": "ALTER TABLE insights ADD COLUMN codes TEXT NOT NULL DEFAULT '{}'",
     "focus": "ALTER TABLE insights ADD COLUMN focus TEXT NOT NULL DEFAULT '[]'",
+    "deploy_change": "ALTER TABLE insights ADD COLUMN deploy_change TEXT NOT NULL DEFAULT ''",
 }
 
 

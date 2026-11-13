@@ -15,6 +15,7 @@ from trace_lens.clients import Deploys, PromClient, TempoClient
 from trace_lens.config import Settings, settings_from_env
 from trace_lens.context import service_context
 from trace_lens.engine import Engine, run_examine
+from trace_lens.impact import deploy_impact
 from trace_lens.store import Store
 
 log = logging.getLogger("trace_lens")
@@ -27,7 +28,8 @@ class Runner:
         self._s = settings
         self.tempo = TempoClient(settings.tempo_url, settings.tempo_host_header)
         self.deploys = Deploys(settings.lazy_url, settings.lazy_token, settings.stack_lens_url)
-        self._engine = Engine(store, PromClient(settings.prometheus_url), self.tempo, self.deploys, settings)
+        self.prom = PromClient(settings.prometheus_url)
+        self._engine = Engine(store, self.prom, self.tempo, self.deploys, settings)
         self._state: dict[str, Any] = {"last_run": None, "last_error": None, "last_stats": None}
         self._last_prune = 0.0
 
@@ -39,6 +41,19 @@ class Runner:
                 "stack_lens": bool(self._s.stack_lens_url),
             },
         }
+
+    def impact(self, service: str, at: float | None, minutes: int) -> dict[str, Any]:
+        """Antes y después del deploy en ``at`` (o del último de 24 h que no sea un build)."""
+        now = time.time()
+        found = [d for d in self.deploys(service, now - DAY, now) if "build" not in d.source]
+        if at is None:
+            if not found:
+                raise LookupError(f"{service} no tuvo deploys en las últimas 24 h")
+            deploy = max(found, key=lambda d: d.at)
+        else:
+            near = [d for d in found if abs(d.at - at) <= 600]
+            deploy = min(near, key=lambda d: abs(d.at - at)) if near else None
+        return deploy_impact(self.prom.query, self.tempo, service, deploy.at if deploy else at, deploy, minutes)
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="detector", daemon=True).start()
@@ -78,6 +93,7 @@ def main() -> None:
                 runner.tempo, svc, ep, kind, start, end, limit
             ),
             lambda svc, start, end: service_context(runner.deploys, settings.stack_lens_url, svc, start, end),
+            runner.impact,
         ),
         host=os.getenv("TRACE_LENS_HOST", "0.0.0.0"),
         port=int(os.getenv("TRACE_LENS_PORT", "7500")),
